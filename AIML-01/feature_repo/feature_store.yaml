@@ -1,0 +1,12 @@
+# Feast feature repository for the fraud platform.
+#   offline store : parquet files written by `python -m fraud.pipeline features`
+#   online store  : Redis (same instance the scoring service uses for streaming state)
+project: fraud_platform
+provider: local
+registry: data/registry.db
+online_store:
+  type: redis
+  connection_string: ${REDIS_CONNECTION:-localhost:6379}
+offline_store:
+  type: file
+entity_key_serialization_version: 2
