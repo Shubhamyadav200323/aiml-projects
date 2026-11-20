@@ -1,0 +1,10 @@
+# Item encoder - used offline to (re)build the FAISS index when the catalogue changes
+name: "item_tower"
+platform: "tensorflow_savedmodel"
+max_batch_size: 4096
+input [
+  { name: "item_idx"   data_type: TYPE_INT64 dims: [ ] },
+  { name: "item_dense" data_type: TYPE_FP32  dims: [ 21 ] }
+]
+output [ { name: "embedding" data_type: TYPE_FP32 dims: [ 64 ] } ]
+instance_group [ { count: 1 kind: KIND_CPU } ]

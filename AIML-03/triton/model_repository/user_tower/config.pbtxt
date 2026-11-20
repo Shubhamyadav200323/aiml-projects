@@ -1,0 +1,13 @@
+# Two-tower user encoder: features -> 64-d L2-normalised embedding (queried against FAISS)
+name: "user_tower"
+platform: "tensorflow_savedmodel"
+max_batch_size: 256
+input [
+  { name: "user_idx"   data_type: TYPE_INT64 dims: [ ] },
+  { name: "user_dense" data_type: TYPE_FP32  dims: [ 19 ] },
+  { name: "history"    data_type: TYPE_INT64 dims: [ 20 ] }
+]
+output [ { name: "embedding" data_type: TYPE_FP32 dims: [ 64 ] } ]
+dynamic_batching { max_queue_delay_microseconds: 500 }
+instance_group [ { count: 2 kind: KIND_CPU } ]
+version_policy: { latest: { num_versions: 2 } }

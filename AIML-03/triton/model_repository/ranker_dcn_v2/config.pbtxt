@@ -1,0 +1,13 @@
+# Stage-2 ranker (dcn_v2): scores (user, candidate) pairs; A/B experiment arm
+name: "ranker_dcn_v2"
+platform: "tensorflow_savedmodel"
+max_batch_size: 1024
+input [
+  { name: "user_idx" data_type: TYPE_INT64 dims: [ ] },
+  { name: "item_idx" data_type: TYPE_INT64 dims: [ ] },
+  { name: "dense"    data_type: TYPE_FP32  dims: [ 44 ] }
+]
+output [ { name: "score" data_type: TYPE_FP32 dims: [ ] } ]
+dynamic_batching { preferred_batch_size: [ 300, 600 ] max_queue_delay_microseconds: 1000 }
+instance_group [ { count: 2 kind: KIND_CPU } ]
+version_policy: { latest: { num_versions: 2 } }
