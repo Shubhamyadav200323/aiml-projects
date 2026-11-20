@@ -1,0 +1,103 @@
+# ---------------- Application tier: training job, scoring API (autoscaled), stream consumer, retrain CronJob
+apiVersion: batch/v1
+kind: Job
+metadata: {name: train-initial, namespace: fraud}
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: trainer
+          image: fraud-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, fraud.pipeline, train, --dataset, synthetic, --out, /app/artifacts]
+          envFrom: [{configMapRef: {name: fraud-config}}, {secretRef: {name: fraud-db}}]
+          volumeMounts: [{name: artifacts, mountPath: /app/artifacts}]
+          resources: {requests: {cpu: "1", memory: 2Gi}, limits: {memory: 4Gi}}
+      volumes: [{name: artifacts, persistentVolumeClaim: {claimName: model-artifacts}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: fraud-api, namespace: fraud}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: fraud-api}}
+  strategy: {rollingUpdate: {maxUnavailable: 0, maxSurge: 1}}
+  template:
+    metadata:
+      labels: {app: fraud-api, tier: application}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "8000", prometheus.io/path: /metrics}
+    spec:
+      containers:
+        - name: api
+          image: fraud-platform:latest
+          imagePullPolicy: IfNotPresent
+          envFrom: [{configMapRef: {name: fraud-config}}, {secretRef: {name: fraud-db}}]
+          ports: [{containerPort: 8000}]
+          readinessProbe: {httpGet: {path: /ready, port: 8000}, initialDelaySeconds: 5, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /health, port: 8000}, periodSeconds: 10}
+          resources: {requests: {cpu: 250m, memory: 512Mi}, limits: {cpu: "1", memory: 1Gi}}
+          volumeMounts: [{name: artifacts, mountPath: /app/artifacts, readOnly: true}]
+      volumes: [{name: artifacts, persistentVolumeClaim: {claimName: model-artifacts}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: fraud-api, namespace: fraud}
+spec: {selector: {app: fraud-api}, ports: [{port: 8000, targetPort: 8000}]}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: fraud-api, namespace: fraud}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: fraud-api}
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: {name: cpu, target: {type: Utilization, averageUtilization: 65}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: fraud-api, namespace: fraud}
+spec: {minAvailable: 1, selector: {matchLabels: {app: fraud-api}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: fraud-consumer, namespace: fraud}
+spec:
+  replicas: 1   # scale up to the topic's partition count (6)
+  selector: {matchLabels: {app: fraud-consumer}}
+  template:
+    metadata: {labels: {app: fraud-consumer, tier: application}}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: consumer
+          image: fraud-platform:latest
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, fraud.streaming.consumer]
+          envFrom: [{configMapRef: {name: fraud-config}}, {secretRef: {name: fraud-db}}]
+          resources: {requests: {cpu: 250m, memory: 512Mi}}
+          volumeMounts: [{name: artifacts, mountPath: /app/artifacts, readOnly: true}]
+      volumes: [{name: artifacts, persistentVolumeClaim: {claimName: model-artifacts}}]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: drift-retrain, namespace: fraud}
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: retrain
+              image: fraud-platform:latest
+              imagePullPolicy: IfNotPresent
+              command: [python, -m, fraud.monitoring.retrain, --current, /app/artifacts/recent_features.parquet]
+              envFrom: [{configMapRef: {name: fraud-config}}, {secretRef: {name: fraud-db}}]
+              volumeMounts: [{name: artifacts, mountPath: /app/artifacts}]
+          volumes: [{name: artifacts, persistentVolumeClaim: {claimName: model-artifacts}}]

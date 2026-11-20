@@ -1,0 +1,84 @@
+# Full local stack:  docker compose up --build
+#   1. trainer  -> writes model artifacts to the shared volume, then exits
+#   2. api / consumer start once artifacts exist
+#   3. producer replays the dataset into Kafka
+services:
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_NUM_PARTITIONS: 6
+    ports: ["9092:9092"]
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment: {POSTGRES_USER: fraud, POSTGRES_PASSWORD: fraud, POSTGRES_DB: fraud}
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.14.1
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/artifacts
+    ports: ["5000:5000"]
+    volumes: [mlflow:/mlflow]
+
+  trainer:
+    build: .
+    command: python -m fraud.pipeline train --dataset synthetic --out /app/artifacts
+    environment: &env
+      FRAUD_ARTIFACTS: /app/artifacts
+      DATABASE_URL: postgresql+psycopg2://fraud:fraud@postgres:5432/fraud
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP: kafka:9092
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes: [artifacts:/app/artifacts]
+    depends_on: [mlflow]
+
+  api:
+    build: .
+    environment: *env
+    ports: ["8000:8000"]
+    volumes: [artifacts:/app/artifacts]
+    depends_on:
+      trainer: {condition: service_completed_successfully}
+      postgres: {condition: service_started}
+      redis: {condition: service_started}
+
+  consumer:
+    build: .
+    command: python -m fraud.streaming.consumer
+    environment: *env
+    volumes: [artifacts:/app/artifacts]
+    depends_on:
+      trainer: {condition: service_completed_successfully}
+      kafka: {condition: service_healthy}
+
+  producer:
+    build: .
+    command: python -m fraud.streaming.producer --dataset synthetic --speedup 7200
+    environment: *env
+    depends_on:
+      consumer: {condition: service_started}
+
+  dashboard:
+    build: .
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    environment: {FRAUD_API_URL: "http://api:8000"}
+    ports: ["8501:8501"]
+    depends_on: [api]
+
+volumes: {artifacts: {}, pgdata: {}, mlflow: {}}
