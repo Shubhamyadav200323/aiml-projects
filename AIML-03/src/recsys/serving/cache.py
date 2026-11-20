@@ -28,7 +28,7 @@ class MemoryCache:
     def get(self, key: str) -> Any | None:
         with self._lock:
             item = self._d.get(key)
-            if item is None or item[0] < time.monotonic():
+            if item is None or item[0] <= time.monotonic():
                 self._d.pop(key, None)
                 self.misses += 1
                 return None

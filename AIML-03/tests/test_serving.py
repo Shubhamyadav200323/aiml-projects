@@ -39,7 +39,7 @@ def test_cache_hit_and_ttl(service):
     assert second.cached and [i.item_id for i in second.items] == [i.item_id for i in first.items]
     c = MemoryCache()
     c.set("a", 1, ttl_s=0)
-    time.sleep(0.01)
+    time.sleep(0.05)
     assert c.get("a") is None
 
 

@@ -1,0 +1,52 @@
+# docker compose up --build
+#   trainer -> artifacts volume (Triton layout)  -> triton loads models
+#   api (TRITON_URL set) + redis cache + postgres events -> ui
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["6379:6379"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment: {POSTGRES_USER: recsys, POSTGRES_PASSWORD: recsys, POSTGRES_DB: recsys}
+    volumes: [pg:/var/lib/postgresql/data]
+
+  trainer:
+    build: .
+    command: >
+      sh -c "python -m recsys.pipeline train --dataset synthetic --out /app/artifacts &&
+             cp -rn /app/triton/model_repository/. /app/artifacts/models/"
+    volumes:
+      - artifacts:/app/artifacts
+      - ./triton:/app/triton:ro
+
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.05-py3
+    command: >
+      tritonserver --model-repository=/models/models --model-control-mode=explicit
+      --load-model=user_tower --load-model=ranker_dcn_v2 --load-model=ranker_wide_deep
+    ports: ["8000:8000", "8002:8002"]
+    volumes: [artifacts:/models:ro]
+    depends_on:
+      trainer: {condition: service_completed_successfully}
+
+  api:
+    build: .
+    environment:
+      RECSYS_ARTIFACTS: /app/artifacts
+      REDIS_URL: redis://redis:6379/0
+      EVENTS_DB: postgresql+psycopg2://recsys:recsys@postgres:5432/recsys
+      TRITON_URL: triton:8000
+    ports: ["8100:8100"]
+    volumes: [artifacts:/app/artifacts:ro]
+    depends_on: [triton, redis, postgres]
+
+  ui:
+    build: .
+    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    environment: {RECSYS_API_URL: "http://api:8100"}
+    ports: ["8501:8501"]
+    depends_on: [api]
+
+volumes: {artifacts: {}, pg: {}}
